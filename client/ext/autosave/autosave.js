@@ -10,14 +10,12 @@
 
 define(function(require, exports, module) {
 
-"use strict";
-
 var ide = require("core/ide");
 var ext = require("core/ext");
 var fs = require("ext/filesystem/filesystem");
 var Diff_Match_Patch = require("./diff_match_patch");
-var markup = require("text!ext/autosave/autosave.xml");
 var Save = require("ext/save/save");
+var Collab = require("c9/ext/collaborate/collaborate");
 
 var INTERVAL = 6000;
 var FILE_SUFFIX = "c9save";
@@ -36,7 +34,7 @@ var removeFile = function(path) {
             fs.remove(path);
     });
 };
-/// test asd
+
 var Diff = new Diff_Match_Patch();
 
 module.exports = ext.register("ext/autosave/autosave", {
@@ -44,12 +42,28 @@ module.exports = ext.register("ext/autosave/autosave", {
     name: "Save",
     alone: true,
     type: ext.GENERAL,
-    markup: markup,
     deps: [fs],
     offline: true,
     nodes: [],
-    saveBuffer: {},
     undoStack: {},
+
+    addUserToDocChangeList: function(user, doc) {
+        var node = doc.getNode();
+        var origPath = node.getAttribute("path");
+        if (origPath && this.undoStack[origPath]) {
+            this.undoStack[origPath].usersChanged.push(user.user.email);
+        }
+    },
+
+    getUser: function(suffix, doc) {
+        if (doc.users && doc.users[suffix]) {
+            var uid = doc.users[suffix].split("-")[0];
+            if (Collab.users[uid]) {
+                return Collab.users[uid];
+            }
+        }
+        return null;
+    },
 
     hook : function(){
         if (!tabEditors)
@@ -66,11 +80,24 @@ module.exports = ext.register("ext/autosave/autosave", {
             self.doAutoSave();
         }, INTERVAL);
 
+        var onDocChange = function(e, doc) {
+            if (e.data && e.data.delta) {
+                var suffix = e.data.delta.suffix;
+                if (suffix) {
+                    self.addUserToDocChangeList.call(self, self.getUser(suffix, doc), doc);
+                }
+            }
+        };
+
         ide.addEventListener("afteropenfile", function(data) {
             if (!data || !data.doc)
                 return;
 
             var doc = data.doc;
+            doc.acedoc.addEventListener("change", function(e) {
+                onDocChange(e, doc);
+            });
+
             var node = doc.getNode();
             var origPath = node.getAttribute("path");
             var bkpPath = getTempPath(node.getAttribute("path"));
@@ -82,7 +109,8 @@ module.exports = ext.register("ext/autosave/autosave", {
                     self.undoStack[origPath] = {
                         startValue: currentValue,
                         lastSavedContent: currentValue,
-                        revisions: []
+                        revisions: [],
+                        usersChanged: []
                     };
                     return;
                 }
@@ -107,32 +135,7 @@ module.exports = ext.register("ext/autosave/autosave", {
         // });
     },
 
-    init: function() {
-        var resetWinAndHide = function() {
-            winNewerSave.restoredContents = null;
-            winNewerSave.doc = null;
-            winNewerSave.path = null;
-            winNewerSave.hide();
-        };
-
-        winNewerSave.onafterrender = function(){
-            btnRestoreYes.addEventListener("click", function() {
-                var contents = winNewerSave.restoredContents;
-                winNewerSave.doc && winNewerSave.doc.setValue(contents);
-                winNewerSave.path && removeFile(winNewerSave.path);
-                resetWinAndHide();
-            });
-
-
-            btnRestoreNo.addEventListener("click", function() {
-                // It is understood that if the user doesn't want to restore
-                // contents from the previous file the first time, he will
-                // never want to.
-                winNewerSave.path && removeFile(winNewerSave.path);
-                resetWinAndHide();
-            });
-        };
-    },
+    init: function() {},
 
     doAutoSave: function() {
         var pages = tabEditors.getPages();
@@ -167,35 +170,32 @@ module.exports = ext.register("ext/autosave/autosave", {
         panel.setAttribute("caption", "Saving file " + origPath);
 
         var pathLeafs = origPath.split("/");
-        var fileName = pathLeafs.pop();
+        var fileName = getTempPath(pathLeafs.pop());
         var dirName = pathLeafs.join("/");
-
-        fileName = getTempPath(fileName);
-
-        var self = this;
         var bkpPath = dirName + "/" + fileName;
         var value = doc.getValue();
 
+        var self = this;
         var lastContent, patch, diffText;
         if (this.undoStack[origPath]) {
             lastContent = this.undoStack[origPath].lastSavedContent;
             patch = Diff.patch_make(lastContent, doc.getValue());
             diffText = Diff.patch_toText(patch);
-        }
 
-        Save.quicksave(page, function() {
-            var backup = self.undoStack[origPath];
-            backup.lastSavedContent = value;
-            backup.revisions.push(diffText);
+            Save.quicksave(page, function() {
+                var backup = self.undoStack[origPath];
+                backup.lastSavedContent = value;
+                backup.revisions.push(diffText);
 
-            fs.saveFile(bkpPath, JSON.stringify(backup), function(data, state, extra) {
-                if (state !== apf.SUCCESS) {
-                    return;
-                }
-                console.log("Backup saved:", backup);
+                fs.saveFile(bkpPath, JSON.stringify(backup), function(data, state, extra) {
+                    if (state !== apf.SUCCESS) {
+                        return;
+                    }
+                    backup.usersChanged = [];
+                    console.log("Backup saved:", backup);
+                });
             });
-        });
-
+        }
         return false;
     },
 
