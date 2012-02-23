@@ -4,7 +4,7 @@
  * accidentally leaves the editor without saving.
  *
  * @author Sergi Mansilla <sergi AT ajax DOT org>
- * @copyright 2011, Ajax.org B.V.
+ * @copyright 2012, Ajax.org B.V.
  * @license GPLv3 <http://www.gnu.org/licenses/gpl.txt>
  */
 
@@ -15,9 +15,11 @@ define(function(require, exports, module) {
 var ide = require("core/ide");
 var ext = require("core/ext");
 var fs = require("ext/filesystem/filesystem");
+var Diff_Match_Patch = require("./diff_match_patch");
 var markup = require("text!ext/autosave/autosave.xml");
+var Save = require("ext/save/save");
 
-var INTERVAL = 60000;
+var INTERVAL = 6000;
 var FILE_SUFFIX = "c9save";
 
 var getTempPath = function(originalPath) {
@@ -34,17 +36,20 @@ var removeFile = function(path) {
             fs.remove(path);
     });
 };
+/// test asd
+var Diff = new Diff_Match_Patch();
 
 module.exports = ext.register("ext/autosave/autosave", {
-    dev       : "Ajax.org",
-    name      : "Save",
-    alone     : true,
-    type      : ext.GENERAL,
-    markup    : markup,
-    deps      : [fs],
-    offline   : true,
-    nodes     : [],
+    dev: "Ajax.org",
+    name: "Save",
+    alone: true,
+    type: ext.GENERAL,
+    markup: markup,
+    deps: [fs],
+    offline: true,
+    nodes: [],
     saveBuffer: {},
+    undoStack: {},
 
     hook : function(){
         if (!tabEditors)
@@ -54,6 +59,7 @@ module.exports = ext.register("ext/autosave/autosave", {
         // This is the main interval. Whatever it happens, every `INTERVAL`
         // milliseconds, the plugin will attempt to save every file that is
         // open and dirty.
+
         // We might want to detect user "bursts" in writing and autosave after
         // those happen. Left as an exercise for the reader.
         this.autoSaveInterval = setInterval(function() {
@@ -64,45 +70,44 @@ module.exports = ext.register("ext/autosave/autosave", {
             if (!data || !data.doc)
                 return;
 
-            var node = data.doc.getNode();
-            var dateOriginal = new Date(node.getAttribute("modifieddate"));
+            var doc = data.doc;
+            var node = doc.getNode();
+            var origPath = node.getAttribute("path");
             var bkpPath = getTempPath(node.getAttribute("path"));
 
             // If there is already a backup file
             fs.exists(bkpPath, function(exists) {
-                if (!exists)
+                var currentValue = doc.getValue();
+                if (!exists) {
+                    self.undoStack[origPath] = {
+                        startValue: currentValue,
+                        lastSavedContent: currentValue,
+                        revisions: []
+                    };
                     return;
+                }
 
-                fs.list(bkpPath, function(xml, depth, fileObj) {
-                    var date;
-                    if (fileObj.data.parentNode.lastModified)
-                        date = new Date(fileObj.data.parentNode.lastModified);
+                fs.readFile(bkpPath, function(contents) {
+                    if (contents) {
+                        try {
+                            self.undoStack[origPath] = JSON.parse(contents);
+                            self.undoStack[origPath].lastSavedContent = currentValue;
+                        }
+                        catch (e) {}
 
-                    // If the date of the backed up file is newer than the file we
-                    // are trying to open, present the user with a choice dialog
-                    if (date && date.getTime() > dateOriginal.getTime()) {
-                        ext.initExtension(self);
-
-                        fs.readFile(bkpPath, function(contents) {
-                            // Set up some state into the window itself. Not great,
-                            // but easiest way and not too awful
-                            winNewerSave.restoredContents = contents;
-                            winNewerSave.doc = data.doc;
-                            winNewerSave.path = bkpPath;
-                            winNewerSave.show();
-                        });
+                        console.log(self.undoStack[origPath]);
                     }
                 });
             });
         });
 
         // Remove any temporary file after the user saves willingly.
-        ide.addEventListener("afterfilesave", function(obj) {
-            removeFile(getTempPath(obj.node.getAttribute("path")));
-        });
+        // ide.addEventListener("afterfilesave", function(obj) {
+        //     removeFile(getTempPath(obj.node.getAttribute("path")));
+        // });
     },
 
-    init : function() {
+    init: function() {
         var resetWinAndHide = function() {
             winNewerSave.restoredContents = null;
             winNewerSave.doc = null;
@@ -136,7 +141,7 @@ module.exports = ext.register("ext/autosave/autosave", {
         }
     },
 
-    saveTmp : function(page) {
+    saveTmp: function(page) {
         if (!page || !page.$at)
             page = tabEditors.getPage();
 
@@ -157,19 +162,11 @@ module.exports = ext.register("ext/autosave/autosave", {
             return;
         }
 
-        // Check if we're already saving!
-        var saving = parseInt(node.getAttribute("saving"), 10);
-        var path = node.getAttribute("path");
-        if (saving) {
-            this.saveBuffer[path] = page;
-            return;
-        }
-        apf.xmldb.setAttribute(node, "saving", "1");
-
+        var origPath = node.getAttribute("path");
         var panel = sbMain.firstChild;
-        panel.setAttribute("caption", "Saving file " + path);
+        panel.setAttribute("caption", "Saving file " + origPath);
 
-        var pathLeafs = path.split("/");
+        var pathLeafs = origPath.split("/");
         var fileName = pathLeafs.pop();
         var dirName = pathLeafs.join("/");
 
@@ -178,17 +175,25 @@ module.exports = ext.register("ext/autosave/autosave", {
         var self = this;
         var bkpPath = dirName + "/" + fileName;
         var value = doc.getValue();
-        fs.saveFile(bkpPath, value, function(data, state, extra) {
-            if (state != apf.SUCCESS)
-                return;
 
-            panel.setAttribute("caption", "Auto-saved file " + path);
+        var lastContent, patch, diffText;
+        if (this.undoStack[origPath]) {
+            lastContent = this.undoStack[origPath].lastSavedContent;
+            patch = Diff.patch_make(lastContent, doc.getValue());
+            diffText = Diff.patch_toText(patch);
+        }
 
-            apf.xmldb.removeAttribute(node, "saving");
-            if (self.saveBuffer[path]) {
-                delete self.saveBuffer[path];
-                self.saveTmp(page);
-            }
+        Save.quicksave(page, function() {
+            var backup = self.undoStack[origPath];
+            backup.lastSavedContent = value;
+            backup.revisions.push(diffText);
+
+            fs.saveFile(bkpPath, JSON.stringify(backup), function(data, state, extra) {
+                if (state !== apf.SUCCESS) {
+                    return;
+                }
+                console.log("Backup saved:", backup);
+            });
         });
 
         return false;
@@ -217,4 +222,3 @@ module.exports = ext.register("ext/autosave/autosave", {
     }
 });
 });
-
