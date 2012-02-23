@@ -4,39 +4,36 @@
  * accidentally leaves the editor without saving.
  *
  * @author Sergi Mansilla <sergi AT ajax DOT org>
- * @copyright 2012, Ajax.org B.V.
+ * @copyright 2011, Ajax.org B.V.
  * @license GPLv3 <http://www.gnu.org/licenses/gpl.txt>
- */ 
+ */
 
 define(function(require, exports, module) {
 
 "use strict";
- 
+
 var ide = require("core/ide");
 var ext = require("core/ext");
 var fs = require("ext/filesystem/filesystem");
-var Diff_Match_Patch = require("./diff_match_patch");
 var markup = require("text!ext/autosave/autosave.xml");
 
-var INTERVAL = 6000;
+var INTERVAL = 60000;
 var FILE_SUFFIX = "c9save";
- 
+
 var getTempPath = function(originalPath) {
     var pathLeafs = originalPath.split("/");
-    var last = pathLeafs.length - 1; 
+    var last = pathLeafs.length - 1;
 
     pathLeafs[last] = "." + pathLeafs[last] + "." + FILE_SUFFIX;
     return pathLeafs.join("/");
-}; 
- 
+};
+
 var removeFile = function(path) {
     fs.exists(path, function(exists) {
         if (exists)
             fs.remove(path);
     });
 };
-
-var Diff = new Diff_Match_Patch();
 
 module.exports = ext.register("ext/autosave/autosave", {
     dev       : "Ajax.org",
@@ -105,7 +102,7 @@ module.exports = ext.register("ext/autosave/autosave", {
         });
     },
 
-    init: function() {
+    init : function() {
         var resetWinAndHide = function() {
             winNewerSave.restoredContents = null;
             winNewerSave.doc = null;
@@ -139,7 +136,7 @@ module.exports = ext.register("ext/autosave/autosave", {
         }
     },
 
-    saveTmp: function(page) {
+    saveTmp : function(page) {
         if (!page || !page.$at)
             page = tabEditors.getPage();
 
@@ -171,7 +168,7 @@ module.exports = ext.register("ext/autosave/autosave", {
 
         var panel = sbMain.firstChild;
         panel.setAttribute("caption", "Saving file " + path);
- 
+
         var pathLeafs = path.split("/");
         var fileName = pathLeafs.pop();
         var dirName = pathLeafs.join("/");
@@ -181,20 +178,6 @@ module.exports = ext.register("ext/autosave/autosave", {
         var self = this;
         var bkpPath = dirName + "/" + fileName;
         var value = doc.getValue();
-        
-        fs.exists(path, function(fileExists) {
-            if (fileExists === true) {
-                fs.readFile(path, function(contents) {
-                    var patch = Diff.patch_make(contents, doc.getValue());
-                    var diffs = Diff.patch_toText(contents, patch);
-                    console.log(diffs);
-                });
-            }
-            else {
-               // Probably a new file
-            }
-        });
-        
         fs.saveFile(bkpPath, value, function(data, state, extra) {
             if (state != apf.SUCCESS)
                 return;
@@ -234,3 +217,4 @@ module.exports = ext.register("ext/autosave/autosave", {
     }
 });
 });
+
