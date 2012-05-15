@@ -110,7 +110,7 @@ module.exports = ext.register("ext/searchreplace/searchreplace", apf.extend({
                 return editor && editor.ceEditor;
             },
             exec: function(env, args, request) {
-                _self.toggleDialog(1, false);
+                _self.toggleDialog(0, false);
             }
         });
 
